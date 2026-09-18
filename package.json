@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "dev:local": "npm --prefix frontend run dev:local",
+    "dev:network": "npm --prefix frontend run dev:network",
+    "dev:choose": "npm --prefix frontend run dev:choose"
+  },
+  "dependencies": {
+    "firebase": "^12.19.0"
+  }
+}

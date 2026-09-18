@@ -1,0 +1,11 @@
+rules_version='2'
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      // Client access remains disabled until authenticated, user-scoped
+      // Firestore operations are implemented.
+      allow read, write: if false;
+    }
+  }
+}
