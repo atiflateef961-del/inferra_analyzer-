@@ -72,6 +72,17 @@ function Test-TcpPort {
     }
 }
 
+function Test-NetworkBinding {
+    param([int]$Port)
+
+    foreach ($line in (& netstat.exe -ano)) {
+        if ($line -match "\s(?:0\.0\.0\.0|\[::\]):$Port\s+\S+\s+LISTENING\s+\d+") {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Wait-ForEndpoint {
     param(
         [string]$Uri,
@@ -206,7 +217,8 @@ if ((Get-ListeningPids -Port $port).Count -gt 0) {
         $healthy = $false
     }
 
-    if ($healthy) {
+    $networkBindingReady = $Mode -ne "Network" -or (Test-NetworkBinding -Port $port)
+    if ($healthy -and $networkBindingReady) {
         Write-Host "Next.js is already running."
         Write-Host "- Local:   $localUrl"
         Write-Host "- Network: $networkUrl"
@@ -217,7 +229,11 @@ if ((Get-ListeningPids -Port $port).Count -gt 0) {
         exit 0
     }
 
-    Write-Host "Stopping stale process on port $port..."
+    if ($Mode -eq "Network" -and -not $networkBindingReady) {
+        Write-Host "Restarting Next.js with network access enabled..."
+    } else {
+        Write-Host "Stopping stale process on port $port..."
+    }
     Stop-PortListeners -Port $port
 }
 

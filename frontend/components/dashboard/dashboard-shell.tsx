@@ -1,6 +1,8 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -11,7 +13,6 @@ import {
   LayoutGrid,
   MessageSquareText,
   Search,
-  Settings,
   Sparkles,
   TrendingUp,
   Wallet,
@@ -44,7 +45,6 @@ const navItems = [
   { label: "AI Insights", icon: Sparkles, href: "#insights" },
   { label: "Alerts", icon: AlertTriangle, href: "#alerts" },
   { label: "Reports", icon: MessageSquareText, href: "#reports" },
-  { label: "Settings", icon: Settings, href: "/login" },
 ];
 
 function DashboardWorkspace() {
@@ -210,8 +210,8 @@ function DashboardWorkspace() {
 
                 <div className="space-y-3">
                   {(analytics?.headline_insights.length ? analytics.headline_insights : ["Import files to generate live insights."]).map(
-                    (insight) => (
-                      <div key={insight} className="ai-insight-card rounded-2xl p-3">
+                    (insight, index) => (
+                      <div key={`${insight}-${index}`} className="ai-insight-card rounded-2xl p-3">
                         <p className="text-sm text-slate-200">{insight}</p>
                       </div>
                     ),
@@ -222,8 +222,8 @@ function DashboardWorkspace() {
               <div id="alerts" className="glass-card rounded-[28px] p-5">
                 <p className="text-sm text-slate-300">Review queue</p>
                 <div className="mt-4 space-y-3">
-                  {(analytics?.alerts.length ? analytics.alerts : [{ label: "No open issues", status: "Monitoring" }]).map((item) => (
-                    <div key={item.label} className="flex items-center justify-between rounded-2xl border border-white/8 bg-white/4 px-3 py-2.5">
+                  {(analytics?.alerts.length ? analytics.alerts : [{ label: "No open issues", status: "Monitoring" }]).map((item, index) => (
+                    <div key={`${item.label}-${item.status}-${index}`} className="flex items-center justify-between rounded-2xl border border-white/8 bg-white/4 px-3 py-2.5">
                       <span className="text-sm text-slate-200">{item.label}</span>
                       <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-200">
                         {item.status}
@@ -266,6 +266,25 @@ function DashboardWorkspace() {
 }
 
 export function DashboardShell() {
+  const router = useRouter();
+  const [hasUser, setHasUser] = useState(false);
+
+  useEffect(() => {
+    const authorizationCheck = window.setTimeout(() => {
+      if (window.localStorage.getItem("inferra-local-user")?.trim()) {
+        setHasUser(true);
+      } else {
+        router.replace("/login");
+      }
+    }, 0);
+
+    return () => window.clearTimeout(authorizationCheck);
+  }, [router]);
+
+  if (!hasUser) {
+    return null;
+  }
+
   return (
     <DashboardDataProvider>
       <DashboardWorkspace />

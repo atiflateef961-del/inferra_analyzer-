@@ -172,13 +172,16 @@ def _analyze_table(headers: list[str], rows: list[list[Any]]) -> dict[str, Any]:
     has_profit_column = "profit" in classified
     series_map: dict[str, dict[str, float]] = {}
     category_map: dict[str, float] = {}
-    location_map: dict[str, dict[str, float]] = {}
+    location_map: dict[str, dict[str, Any]] = {}
     numeric_columns: dict[int, float] = {}
+    normalized_headers = [_normalize_header(header) for header in headers]
 
     for row in rows:
         period = None
         category = None
         location = None
+        latitude = None
+        longitude = None
         revenue = 0.0
         expense = 0.0
         profit = 0.0
@@ -186,6 +189,7 @@ def _analyze_table(headers: list[str], rows: list[list[Any]]) -> dict[str, Any]:
             if index >= len(classified):
                 break
             kind = classified[index]
+            normalized_header = normalized_headers[index]
             if kind == "period":
                 period = str(raw).strip() if raw is not None else None
             elif kind == "category":
@@ -201,6 +205,10 @@ def _analyze_table(headers: list[str], rows: list[list[Any]]) -> dict[str, Any]:
             elif kind == "profit":
                 parsed = _parse_number(raw) or 0.0
                 profit += parsed
+            elif normalized_header == "latitude":
+                latitude = _parse_number(raw)
+            elif normalized_header == "longitude":
+                longitude = _parse_number(raw)
             else:
                 parsed = _parse_number(raw)
                 if parsed is not None:
@@ -225,6 +233,10 @@ def _analyze_table(headers: list[str], rows: list[list[Any]]) -> dict[str, Any]:
             location_bucket["revenue"] += revenue
             location_bucket["expense"] += expense
             location_bucket["profit"] += profit
+            if latitude is not None:
+                location_bucket["latitude"] = latitude
+            if longitude is not None:
+                location_bucket["longitude"] = longitude
 
     if revenue_total == 0 and expense_total == 0 and numeric_columns:
         ranked = sorted(numeric_columns.items(), key=lambda item: item[1], reverse=True)
@@ -249,19 +261,23 @@ def _analyze_table(headers: list[str], rows: list[list[Any]]) -> dict[str, Any]:
         {"category": name, "sales": round(value, 2)}
         for name, value in sorted(category_map.items(), key=lambda item: item[1], reverse=True)
     ]
-    locations = [
-        {
+    locations = []
+    for name, values in sorted(
+        location_map.items(),
+        key=lambda item: abs(item[1]["revenue"] or item[1]["profit"]),
+        reverse=True,
+    ):
+        location = {
             "name": name,
             "revenue": round(values["revenue"], 2),
             "expense": round(values["expense"], 2),
             "profit": round(values["profit"], 2),
         }
-        for name, values in sorted(
-            location_map.items(),
-            key=lambda item: abs(item[1]["revenue"] or item[1]["profit"]),
-            reverse=True,
-        )
-    ]
+        if "latitude" in values:
+            location["latitude"] = values["latitude"]
+        if "longitude" in values:
+            location["longitude"] = values["longitude"]
+        locations.append(location)
     alerts = []
     if expense_total > revenue_total > 0:
         alerts.append({"label": "Expense overrun", "status": "Needs review"})

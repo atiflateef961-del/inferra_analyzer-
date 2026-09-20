@@ -91,7 +91,8 @@ def analyze_file(*, filename: str, analysis: dict[str, Any], api_key: str, model
     prompt = (
         "Analyze this uploaded business file. Use only the supplied extracted content and deterministic facts. "
         "Do not invent numbers or claim data that is not present. Return one JSON object with exactly these keys: "
-        'summary (string), key_insights (array of strings), recommendations (array of strings).\n\n'
+        'summary (string, under 60 words), key_insights (array of at most 4 short strings), '
+        'recommendations (array of at most 4 short strings). Keep the response concise.\n\n'
         f"Deterministic facts:\n{json.dumps(facts, ensure_ascii=False)}\n\n"
         f"Extracted content (possibly truncated):\n{excerpt[:12000]}"
     )
@@ -100,15 +101,16 @@ def analyze_file(*, filename: str, analysis: dict[str, Any], api_key: str, model
     result = service.generate(
         prompt,
         system_prompt="You are an accurate business-data analyst. Return valid JSON only.",
+        response_format={"type": "json_object"},
     )
     content = str(result.get("content") or "").strip()
     try:
         parsed = _parse_provider_json(content)
         if not isinstance(parsed.get("summary"), str) or not parsed["summary"].strip():
             raise RuntimeError("The AI provider returned an incomplete analysis response.")
-    except RuntimeError as error:
-        logger.warning("[AI] Invalid structured response filename=%s; using deterministic fallback", filename)
-        return _local_analysis(filename=filename, analysis=analysis, reason=str(error))
+    except RuntimeError:
+        logger.error("[AI] Invalid structured response filename=%s", filename)
+        raise
     output = {
         "summary": parsed["summary"].strip(),
         "key_insights": _string_list(parsed.get("key_insights")),

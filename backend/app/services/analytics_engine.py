@@ -20,7 +20,7 @@ def build_workspace_analytics(documents: list[dict[str, Any]]) -> dict[str, Any]
     profit = 0.0
     series_map: dict[str, dict[str, float]] = {}
     category_map: dict[str, float] = {}
-    location_map: dict[str, dict[str, float]] = {}
+    location_map: dict[str, dict[str, Any]] = {}
     alerts: list[dict[str, str]] = []
     insights: list[dict[str, str]] = []
     processed = 0
@@ -46,6 +46,10 @@ def build_workspace_analytics(documents: list[dict[str, Any]]) -> dict[str, Any]
             bucket["revenue"] += float(item.get("revenue") or 0)
             bucket["expense"] += float(item.get("expense") or 0)
             bucket["profit"] += float(item.get("profit") or 0)
+            if item.get("latitude") is not None:
+                bucket["latitude"] = item["latitude"]
+            if item.get("longitude") is not None:
+                bucket["longitude"] = item["longitude"]
         for alert in document.get("alerts") or []:
             alerts.append(alert)
         ai_analysis = document.get("analysis") or {}
@@ -67,19 +71,23 @@ def build_workspace_analytics(documents: list[dict[str, Any]]) -> dict[str, Any]
         {"category": name, "sales": round(value, 2)}
         for name, value in sorted(category_map.items(), key=lambda item: item[1], reverse=True)
     ]
-    locations = [
-        {
+    locations = []
+    for name, values in sorted(
+        location_map.items(),
+        key=lambda item: abs(item[1]["revenue"] or item[1]["profit"]),
+        reverse=True,
+    ):
+        location = {
             "name": name,
             "revenue": round(values["revenue"], 2),
             "expense": round(values["expense"], 2),
             "profit": round(values["profit"], 2),
         }
-        for name, values in sorted(
-            location_map.items(),
-            key=lambda item: abs(item[1]["revenue"] or item[1]["profit"]),
-            reverse=True,
-        )
-    ]
+        if "latitude" in values:
+            location["latitude"] = values["latitude"]
+        if "longitude" in values:
+            location["longitude"] = values["longitude"]
+        locations.append(location)
 
     if processed == 0:
         insights = [

@@ -1,6 +1,7 @@
 from pathlib import Path
 from io import BytesIO
 
+import pytest
 from openpyxl import Workbook
 from fastapi.testclient import TestClient
 
@@ -114,7 +115,33 @@ def test_ai_analysis_accepts_markdown_wrapped_json(monkeypatch):
     assert result["key_insights"] == ["Insight"]
 
 
-def test_ai_analysis_falls_back_to_real_local_metrics_when_provider_json_is_invalid(monkeypatch):
+def test_upload_response_preserves_coordinates(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        response = client.post(
+            "/api/documents",
+            files={
+                "file": (
+                    "coordinate-sales.csv",
+                    b"country,revenue,expense,latitude,longitude\nUnited States,10000,4000,40.7128,-74.0060\n",
+                    "text/csv",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["document"]["locations"] == [
+        {
+            "name": "United States",
+            "revenue": 10000.0,
+            "expense": 4000.0,
+            "profit": 6000.0,
+            "latitude": 40.7128,
+            "longitude": -74.006,
+        }
+    ]
+
+
+def test_ai_analysis_rejects_invalid_provider_json(monkeypatch):
     class InvalidGroq:
         def __init__(self, **kwargs):
             pass
@@ -123,21 +150,19 @@ def test_ai_analysis_falls_back_to_real_local_metrics_when_provider_json_is_inva
             return {"provider": "groq", "model": "test-model", "content": "not JSON"}
 
     monkeypatch.setattr("app.services.file_analysis_service.GroqService", InvalidGroq)
-    result = analyze_file(
-        filename="sales.csv",
-        analysis={
-            "type": "CSV",
-            "excerpt": "revenue,expense\n100,40",
-            "row_count": 1,
-            "columns": ["revenue", "expense"],
-            "metrics": {"revenue": 100, "expenses": 40, "profit": 60},
-        },
-        api_key="test-key",
-        model="test-model",
-    )
-    assert result["provider"] == "local"
-    assert "100.00" in result["summary"]
-    assert result["warning"]
+    with pytest.raises(RuntimeError, match="invalid analysis response"):
+        analyze_file(
+            filename="sales.csv",
+            analysis={
+                "type": "CSV",
+                "excerpt": "revenue,expense\n100,40",
+                "row_count": 1,
+                "columns": ["revenue", "expense"],
+                "metrics": {"revenue": 100, "expenses": 40, "profit": 60},
+            },
+            api_key="test-key",
+            model="test-model",
+        )
 
 
 def test_upload_list_analytics_and_delete(tmp_path, monkeypatch):
@@ -212,6 +237,23 @@ def test_location_columns_create_geographic_financial_data():
     assert result["locations"] == [
         {"name": "United States", "revenue": 10000.0, "expense": 4000.0, "profit": 6000.0},
         {"name": "Germany", "revenue": 6000.0, "expense": 2500.0, "profit": 3500.0},
+    ]
+
+
+def test_coordinate_columns_are_preserved_for_map_markers():
+    result = process_document(
+        "coordinate-sales.csv",
+        b"country,revenue,expense,latitude,longitude\nUnited States,10000,4000,40.7128,-74.0060\n",
+    )
+    assert result["locations"] == [
+        {
+            "name": "United States",
+            "revenue": 10000.0,
+            "expense": 4000.0,
+            "profit": 6000.0,
+            "latitude": 40.7128,
+            "longitude": -74.006,
+        }
     ]
 
 

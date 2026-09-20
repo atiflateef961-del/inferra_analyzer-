@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import { LoginForm } from "@/components/auth/login-form";
 
@@ -34,10 +33,6 @@ export default function LoginPage() {
                 <span className="h-2 w-2 rounded-full bg-emerald-300" />
                 Live monitoring
               </span>
-              <Link href="/dashboard" className="inline-flex items-center gap-2 text-slate-200 transition hover:text-white">
-                Open dashboard
-                <ArrowRight className="h-4 w-4" />
-              </Link>
             </div>
           </div>
 

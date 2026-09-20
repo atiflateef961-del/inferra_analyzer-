@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, LockKeyhole, Mail, ShieldCheck } from "lucide-react";
@@ -18,7 +17,7 @@ export function LoginForm() {
       return;
     }
     window.localStorage.setItem("inferra-local-user", email.trim());
-    router.push("/");
+    router.push("/dashboard");
   }
 
   return (
@@ -69,9 +68,6 @@ export function LoginForm() {
             <input type="checkbox" className="h-4 w-4 rounded border-white/10 bg-slate-900/60" />
             Keep me signed in
           </label>
-          <Link href="/" className="text-emerald-200 transition hover:text-emerald-100">
-            Continue as guest
-          </Link>
         </div>
 
         <button
@@ -83,25 +79,8 @@ export function LoginForm() {
         </button>
       </form>
 
-      <div className="mt-5 flex items-center gap-3 text-xs uppercase tracking-[0.2em] text-slate-400">
-        <span className="h-px flex-1 bg-white/10" />
-        Or
-        <span className="h-px flex-1 bg-white/10" />
-      </div>
-
-      <button
-        type="button"
-        onClick={() => router.push("/")}
-        className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-slate-100 transition hover:bg-white/10"
-      >
-        Continue to workspace
-      </button>
-
       <p className="mt-6 text-center text-sm text-slate-300">
-        Firebase admin is optional in local development.{" "}
-        <Link href="/" className="font-medium text-emerald-200 hover:text-emerald-100">
-          Open dashboard
-        </Link>
+        Firebase admin is optional in local development.
       </p>
     </div>
   );

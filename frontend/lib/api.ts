@@ -31,7 +31,14 @@ export type WorkspaceDocument = {
   metrics?: { revenue: number; expenses: number; profit: number };
   series?: Array<{ month: string; revenue: number; expense: number; profit: number }>;
   categories?: Array<{ category: string; sales: number }>;
-  locations?: Array<{ name: string; revenue: number; expense: number; profit: number }>;
+  locations?: Array<{
+    name: string;
+    revenue: number;
+    expense: number;
+    profit: number;
+    latitude?: number;
+    longitude?: number;
+  }>;
   alerts?: Array<{ label: string; status: string }>;
   analysis?: {
     summary: string;
@@ -65,7 +72,14 @@ export type WorkspaceAnalytics = {
   };
   series: Array<{ month: string; revenue: number; expense: number; profit: number }>;
   categories: Array<{ category: string; sales: number }>;
-  locations: Array<{ name: string; revenue: number; expense: number; profit: number }>;
+  locations: Array<{
+    name: string;
+    revenue: number;
+    expense: number;
+    profit: number;
+    latitude?: number;
+    longitude?: number;
+  }>;
   insights: Array<{ title: string; detail: string; tone: string }>;
   alerts: Array<{ label: string; status: string }>;
   reports: Array<{ title: string; description: string; value: string; accent: string }>;

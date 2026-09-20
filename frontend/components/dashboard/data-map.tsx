@@ -15,8 +15,11 @@ const locationCoordinates: Record<string, [number, number]> = {
   "new york": [-74, 41], london: [0, 51], berlin: [13, 52], paris: [2, 49], tokyo: [139, 36],
 };
 
-function coordinatesFor(name: string): [number, number] | null {
-  return locationCoordinates[name.trim().toLowerCase()] ?? null;
+function coordinatesFor(location: { name: string; latitude?: number; longitude?: number }): [number, number] | null {
+  if (typeof location.latitude === "number" && typeof location.longitude === "number") {
+    return [location.longitude, location.latitude];
+  }
+  return locationCoordinates[location.name.trim().toLowerCase()] ?? null;
 }
 
 export function DataMap() {
@@ -65,7 +68,7 @@ export function DataMap() {
                 {({ geographies }) => geographies.map((geography) => <Geography key={geography.rsmKey} geography={geography} fill="#1e293b" stroke="#475569" strokeWidth={0.45} />)}
               </Geographies>
               {locations.map((location) => {
-                const coordinates = coordinatesFor(location.name);
+                const coordinates = coordinatesFor(location);
                 if (!coordinates) return null;
                 const intensity = Math.min(18, Math.max(7, Math.abs(location.profit) / Math.max(1, Math.abs(locations[0]?.profit ?? 1)) * 18));
                 return <Marker key={location.name} coordinates={coordinates}><circle r={intensity} fill={location.profit >= 0 ? "#34d399" : "#fb7185"} fillOpacity={0.25} stroke={location.profit >= 0 ? "#6ee7b7" : "#fda4af"} strokeWidth={1.5} /><circle r={3} fill={location.profit >= 0 ? "#a7f3d0" : "#fecdd3"} /><title>{`${location.name}: ${formatMoney(location.profit)} profit`}</title></Marker>;

@@ -23,6 +23,7 @@ export function UploadPanel() {
     setBusy(true);
     setMessage(null);
     setHasError(false);
+    setLatestDocument(null);
     try {
       const uploaded = await uploadFiles(selectedFiles);
       setLatestDocument(uploaded.at(-1) ?? null);

@@ -24,7 +24,14 @@ class GroqService:
         if not self.api_key:
             raise ValueError("GROQ_API_KEY is required")
 
-    def build_payload(self, user_prompt: str, *, system_prompt: str | None = None, model: str | None = None) -> dict[str, Any]:
+    def build_payload(
+        self,
+        user_prompt: str,
+        *,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        response_format: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         messages: list[dict[str, str]] = []
 
         if system_prompt:
@@ -32,14 +39,23 @@ class GroqService:
 
         messages.append({"role": "user", "content": user_prompt})
 
-        return {
+        payload = {
             "model": model or self.model,
             "messages": messages,
             "temperature": 0.2,
-            "max_tokens": 1024,
+            "max_tokens": 2048,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
+        return payload
 
-    def generate(self, user_prompt: str, *, system_prompt: str | None = None) -> dict[str, Any]:
+    def generate(
+        self,
+        user_prompt: str,
+        *,
+        system_prompt: str | None = None,
+        response_format: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         models_to_try: list[str] = []
         for candidate in (self.model, *FALLBACK_GROQ_MODELS):
             if candidate and candidate not in models_to_try:
@@ -47,7 +63,12 @@ class GroqService:
 
         last_error: str | None = None
         for model in models_to_try:
-            payload = self.build_payload(user_prompt, system_prompt=system_prompt, model=model)
+            payload = self.build_payload(
+                user_prompt,
+                system_prompt=system_prompt,
+                model=model,
+                response_format=response_format,
+            )
             response = httpx.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
