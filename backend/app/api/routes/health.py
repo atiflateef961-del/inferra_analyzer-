@@ -40,6 +40,8 @@ def health_check(request: Request):
     }
     if database_reason:
         database_health["reason"] = database_reason
+        if database is not None:
+            database_health["configuration_state"] = getattr(database, "uri_state", "unknown")
     if database_reason == "missing_configuration" and database is not None:
         database_health["missing"] = list(getattr(database, "missing_configuration", []))
 

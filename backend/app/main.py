@@ -24,6 +24,7 @@ def create_app() -> FastAPI:
             database_name=app_settings.mongodb_database,
             server_selection_timeout_ms=app_settings.mongodb_server_selection_timeout_ms,
             uri_configured=app_settings.mongodb_uri_configured,
+            uri_state=app_settings.mongodb_uri_state,
         )
         firebase_auth = FirebaseAuthService(
             project_id=app_settings.firebase_project_id,
@@ -38,8 +39,9 @@ def create_app() -> FastAPI:
             reason = database.failure_reason or "initialization_failed"
             _log_safely(
                 logger.error,
-                "MongoDB initialization failed: reason=%s missing=%s error_type=%s",
+                "MongoDB initialization failed: reason=%s configuration_state=%s missing=%s error_type=%s",
                 reason,
+                database.uri_state,
                 ",".join(database.missing_configuration) or "none",
                 type(error).__name__ if error else "UnknownError",
             )

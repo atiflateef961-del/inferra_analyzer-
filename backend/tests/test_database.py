@@ -79,6 +79,11 @@ def test_mongodb_failure_reasons_are_classified():
     assert missing.failure_reason == "missing_configuration"
     assert missing.missing_configuration == ["MONGODB_URI"]
 
+    empty = MongoDatabase("", "ai_inference", 1000, uri_state="empty")
+    empty.last_error = ConfigurationError("empty URI")
+    assert empty.failure_reason == "missing_configuration"
+    assert empty.missing_configuration == ["MONGODB_URI"]
+
 
 def test_mongodb_ping_reconnects_after_startup_failure(monkeypatch):
     unavailable_client = FakeClient(PyMongoError("database unavailable"))
@@ -120,10 +125,11 @@ def test_health_reports_unavailable_database_without_failing_startup(monkeypatch
     assert response.json()["status"] == "ok"
     assert response.json()["database"]["status"] == "unavailable"
     assert response.json()["database"]["reason"] == "connection_failed"
+    assert response.json()["database"]["configuration_state"] == "present"
 
 
-def test_health_reports_missing_mongodb_configuration(monkeypatch):
-    monkeypatch.setenv("MONGODB_URI", "")
+def test_health_reports_absent_mongodb_configuration(monkeypatch):
+    monkeypatch.delenv("MONGODB_URI", raising=False)
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
     monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
     monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
@@ -138,12 +144,55 @@ def test_health_reports_missing_mongodb_configuration(monkeypatch):
         "status": "unavailable",
         "name": "ai_inference",
         "reason": "missing_configuration",
+        "configuration_state": "absent",
         "missing": ["MONGODB_URI"],
     }
 
 
+def test_health_reports_empty_mongodb_configuration(monkeypatch):
+    monkeypatch.setenv("MONGODB_URI", " \t ")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
+    monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
+    monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
+    client = FakeClient(ServerSelectionTimeoutError("local fallback unavailable"))
+    monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: client)
+
+    with TestClient(create_app()) as test_client:
+        response = test_client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json()["database"] == {
+        "status": "unavailable",
+        "name": "ai_inference",
+        "reason": "missing_configuration",
+        "configuration_state": "empty",
+        "missing": ["MONGODB_URI"],
+    }
+
+
+def test_nonempty_uri_timeout_is_not_misclassified_as_missing(monkeypatch, caplog):
+    uri = "mongodb-sensitive-value-sentinel"
+    monkeypatch.setenv("MONGODB_URI", uri)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
+    monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
+    monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
+    client = FakeClient(ServerSelectionTimeoutError("server selection timed out"))
+    monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: client)
+
+    with TestClient(create_app()) as test_client:
+        response = test_client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json()["database"]["reason"] == "timeout"
+    assert response.json()["database"]["configuration_state"] == "present"
+    assert "missing" not in response.json()["database"]
+    assert uri not in response.text
+    assert "reason=timeout configuration_state=present" in caplog.text
+    assert uri not in caplog.text
+
+
 def test_health_diagnostics_do_not_expose_mongodb_uri_or_password(monkeypatch, caplog):
-    uri = "mongodb+srv://diagnostic-user:diagnostic-password@cluster.example/database"
+    uri = "mongodb-sensitive-value-sentinel"
     monkeypatch.setenv("MONGODB_URI", uri)
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
     monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
@@ -156,6 +205,5 @@ def test_health_diagnostics_do_not_expose_mongodb_uri_or_password(monkeypatch, c
 
     assert response.status_code == 200
     assert response.json()["database"]["reason"] == "connection_failed"
-    assert "diagnostic-user" not in response.text
-    assert "diagnostic-password" not in response.text
     assert uri not in caplog.text
+    assert uri not in response.text

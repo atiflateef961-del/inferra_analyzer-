@@ -20,24 +20,26 @@ class MongoDatabase:
         database_name: str,
         server_selection_timeout_ms: int,
         uri_configured: bool = True,
+        uri_state: str | None = None,
     ) -> None:
         self.uri = uri
         self.database_name = database_name
         self.server_selection_timeout_ms = server_selection_timeout_ms
-        self.uri_configured = uri_configured
+        self.uri_state = uri_state or ("present" if uri_configured else "absent")
+        self.uri_configured = self.uri_state == "present"
         self.client: MongoClient | None = None
         self.last_error: Exception | None = None
 
     @property
     def missing_configuration(self) -> list[str]:
-        return [] if self.uri_configured else ["MONGODB_URI"]
+        return [] if self.uri_state == "present" else ["MONGODB_URI"]
 
     @property
     def failure_reason(self) -> str | None:
         error = self.last_error
         if error is None:
             return None
-        if self.missing_configuration:
+        if self.uri_state in {"absent", "empty"}:
             return "missing_configuration"
         if isinstance(error, (ServerSelectionTimeoutError, NetworkTimeout, ExecutionTimeout, WaitQueueTimeoutError, WTimeoutError)):
             return "timeout"

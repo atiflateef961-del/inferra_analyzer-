@@ -66,7 +66,13 @@ class Settings:
         self.groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
         self.groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
         mongodb_uri = os.getenv("MONGODB_URI")
-        self.mongodb_uri_configured = bool(mongodb_uri and mongodb_uri.strip())
+        if mongodb_uri is None:
+            self.mongodb_uri_state = "absent"
+        elif not mongodb_uri.strip():
+            self.mongodb_uri_state = "empty"
+        else:
+            self.mongodb_uri_state = "present"
+        self.mongodb_uri_configured = self.mongodb_uri_state == "present"
         self.mongodb_uri = (
             mongodb_uri if mongodb_uri is not None else "mongodb://127.0.0.1:27017"
         ).strip()
