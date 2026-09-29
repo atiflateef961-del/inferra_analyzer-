@@ -37,13 +37,18 @@ def create_app() -> FastAPI:
             error = database.last_error
             logger = logging.getLogger(__name__)
             reason = database.failure_reason or "initialization_failed"
+            diagnostic = database.failure_diagnostic or {}
             _log_safely(
                 logger.error,
-                "MongoDB initialization failed: reason=%s configuration_state=%s missing=%s error_type=%s",
+                "MongoDB initialization failed: reason=%s configuration_state=%s missing=%s error_type=%s error_code=%s error_code_name=%s error_message=%s error_details=%s",
                 reason,
                 database.uri_state,
                 ",".join(database.missing_configuration) or "none",
-                type(error).__name__ if error else "UnknownError",
+                diagnostic.get("error_type", type(error).__name__ if error else "UnknownError"),
+                diagnostic.get("error_code", "none"),
+                diagnostic.get("error_code_name", "none"),
+                diagnostic.get("message", "MongoDB operation failed"),
+                diagnostic.get("error_details", "none"),
             )
         if not firebase_auth.initialize():
             error = getattr(firebase_auth, "last_error", None)

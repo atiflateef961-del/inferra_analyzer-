@@ -241,11 +241,60 @@ def test_nonempty_uri_authentication_failure_is_classified_and_sanitized(monkeyp
     assert database["diagnostic"] == {
         "error_type": "OperationFailure",
         "message": "authentication failed for [REDACTED_MONGODB_URI]",
+        "error_code": "18",
     }
     assert "fake-user" not in response.text
     assert "fake-password" not in response.text
     assert "fake-user" not in caplog.text
     assert "fake-password" not in caplog.text
+
+
+def test_mongodb_startup_logs_safe_operation_failure_diagnostics(monkeypatch, caplog):
+    uri = "mongodb://fake-user:fake-password@example.test/ai_inference"
+    monkeypatch.setenv("MONGODB_URI", uri)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
+    monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
+    monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
+    error = OperationFailure(
+        f"authentication failed for {uri}; password=other-secret",
+        code=8000,
+        details={"codeName": "AtlasError", "errmsg": "authentication failed", "password": "details-secret"},
+    )
+    client = FakeClient(error)
+    monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: client)
+
+    with TestClient(create_app()):
+        pass
+
+    assert "reason=connection_failed" in caplog.text
+    assert "configuration_state=present" in caplog.text
+    assert "missing=none" in caplog.text
+    assert "error_type=OperationFailure" in caplog.text
+    assert "error_code=8000" in caplog.text
+    assert "error_code_name=AtlasError" in caplog.text
+    assert "error_message=authentication failed for [REDACTED_MONGODB_URI]" in caplog.text
+    for secret in (uri, "fake-user", "fake-password", "other-secret", "details-secret"):
+        assert secret not in caplog.text
+
+
+def test_mongodb_diagnostic_uses_underlying_chained_exception(monkeypatch, caplog):
+    uri = "mongodb://fake-user:fake-password@example.test/ai_inference"
+    monkeypatch.setenv("MONGODB_URI", uri)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
+    monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
+    monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
+    cause = OperationFailure("authentication failed", code=18)
+    wrapper = RuntimeError("MongoDB startup wrapper")
+    wrapper.__cause__ = cause
+    client = FakeClient(wrapper)
+    monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: client)
+
+    with TestClient(create_app()):
+        pass
+
+    assert "error_type=OperationFailure" in caplog.text
+    assert "error_code=18" in caplog.text
+    assert "error_message=authentication failed" in caplog.text
 
 
 def test_health_diagnostics_do_not_expose_mongodb_uri_or_password(monkeypatch, caplog):
