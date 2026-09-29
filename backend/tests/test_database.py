@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from pymongo.errors import ConfigurationError, OperationFailure, PyMongoError, ServerSelectionTimeoutError
 
+from app.config import Settings
 from app.database import MongoDatabase
 from app.main import create_app
 
@@ -85,6 +86,17 @@ def test_mongodb_failure_reasons_are_classified():
     assert empty.missing_configuration == ["MONGODB_URI"]
 
 
+def test_settings_reads_mongodb_uri_from_process_environment(monkeypatch):
+    uri = "mongodb://fake-user:fake-password@example.test/ai_inference"
+    monkeypatch.setenv("MONGODB_URI", uri)
+
+    settings = Settings()
+
+    assert settings.mongodb_uri_state == "present"
+    assert settings.mongodb_uri_configured is True
+    assert settings.mongodb_uri == uri
+
+
 def test_mongodb_ping_reconnects_after_startup_failure(monkeypatch):
     unavailable_client = FakeClient(PyMongoError("database unavailable"))
     available_client = FakeClient()
@@ -147,6 +159,7 @@ def test_health_reports_absent_mongodb_configuration(monkeypatch):
         "configuration_state": "absent",
         "missing": ["MONGODB_URI"],
     }
+    assert client.admin.commands == []
 
 
 def test_health_reports_empty_mongodb_configuration(monkeypatch):
@@ -168,10 +181,11 @@ def test_health_reports_empty_mongodb_configuration(monkeypatch):
         "configuration_state": "empty",
         "missing": ["MONGODB_URI"],
     }
+    assert client.admin.commands == []
 
 
 def test_nonempty_uri_timeout_is_not_misclassified_as_missing(monkeypatch, caplog):
-    uri = "mongodb-sensitive-value-sentinel"
+    uri = "mongodb://fake-user:fake-password@example.test/ai_inference"
     monkeypatch.setenv("MONGODB_URI", uri)
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
     monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
@@ -191,8 +205,29 @@ def test_nonempty_uri_timeout_is_not_misclassified_as_missing(monkeypatch, caplo
     assert uri not in caplog.text
 
 
+def test_nonempty_uri_authentication_failure_is_classified_and_sanitized(monkeypatch, caplog):
+    uri = "mongodb://fake-user:fake-password@example.test/ai_inference"
+    monkeypatch.setenv("MONGODB_URI", uri)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
+    monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
+    monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
+    client = FakeClient(OperationFailure(f"authentication failed for {uri}", code=18))
+    monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: client)
+
+    with TestClient(create_app()) as test_client:
+        response = test_client.get("/api/health")
+
+    database = response.json()["database"]
+    assert database["reason"] == "authentication_failed"
+    assert database["configuration_state"] == "present"
+    assert "fake-user" not in response.text
+    assert "fake-password" not in response.text
+    assert "fake-user" not in caplog.text
+    assert "fake-password" not in caplog.text
+
+
 def test_health_diagnostics_do_not_expose_mongodb_uri_or_password(monkeypatch, caplog):
-    uri = "mongodb-sensitive-value-sentinel"
+    uri = "mongodb://fake-user:fake-password@example.test/ai_inference"
     monkeypatch.setenv("MONGODB_URI", uri)
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
     monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
@@ -205,5 +240,6 @@ def test_health_diagnostics_do_not_expose_mongodb_uri_or_password(monkeypatch, c
 
     assert response.status_code == 200
     assert response.json()["database"]["reason"] == "connection_failed"
-    assert uri not in caplog.text
-    assert uri not in response.text
+    for secret in (uri, "fake-user", "fake-password"):
+        assert secret not in caplog.text
+        assert secret not in response.text

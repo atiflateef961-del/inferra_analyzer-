@@ -56,6 +56,14 @@ class MongoDatabase:
         return "initialization_failed"
 
     def connect(self) -> bool:
+        if self.uri_state in {"absent", "empty"}:
+            # Do not try the local fallback URI when deployment configuration
+            # is missing; that turns a configuration problem into a misleading
+            # server-selection timeout.
+            self.last_error = ConfigurationError("MONGODB_URI is not configured")
+            self.client = None
+            return False
+
         client: MongoClient | None = None
         try:
             client = MongoClient(
