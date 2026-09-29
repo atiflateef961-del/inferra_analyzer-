@@ -24,7 +24,7 @@ $networkUrl = if ($networkAddress) { "http://$networkAddress`:$port" } else { "u
 $hostname = if ($Mode -eq "Network") { "0.0.0.0" } else { "127.0.0.1" }
 $selectedUrl = if ($Mode -eq "Network" -and $networkAddress) { $networkUrl } else { $localUrl }
 $env:FRONTEND_NETWORK_ADDRESS = $networkAddress
-$backendPort = 8000
+$backendPort = 8001
 $backendHost = if ($Mode -eq "Network") { "0.0.0.0" } else { "127.0.0.1" }
 $backendUrl = if ($Mode -eq "Network" -and $networkAddress) { "http://$networkAddress`:$backendPort" } else { "http://127.0.0.1`:$backendPort" }
 $env:BACKEND_URL = $backendUrl
@@ -148,6 +148,58 @@ function Open-SelectedBrowser {
     Start-Process $Url
 }
 
+function Get-ProjectBackendPids {
+    $projectPids = @()
+    try {
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    } catch {
+        return @()
+    }
+
+    foreach ($process in $processes) {
+        if (-not $process.CommandLine) {
+            continue
+        }
+
+        $commandLine = $process.CommandLine
+        $matchesProjectBackend = (
+            (
+                $commandLine -match 'uvicorn\s+app\.main:app' -or
+                $commandLine -match 'uvicorn\s+backend\.app\.main:app' -or
+                $commandLine -match 'backend\.app\.main:app' -or
+                $commandLine -match 'app\.main:app'
+            ) -and
+            (
+                $commandLine -match [regex]::Escape('D:\Inferra AI\backend') -or
+                $commandLine -match [regex]::Escape('D:/Inferra AI/backend') -or
+                $commandLine -match [regex]::Escape('Inferra AI\\backend') -or
+                $commandLine -match [regex]::Escape('Inferra AI/backend') -or
+                $commandLine -match '\\backend\\\.venv\\Scripts\\python\.exe' -or
+                $commandLine -match '\\.venv\\Scripts\\python\.exe' -or
+                $commandLine -match 'backend\.app\.main:app' -or
+                $commandLine -match '\\backend\\\.venv\\Scripts\\uvicorn\.exe'
+            )
+        )
+
+        if ($matchesProjectBackend) {
+            $projectPids += [int]$process.ProcessId
+        }
+    }
+
+    return @($projectPids | Select-Object -Unique)
+}
+
+function Stop-ProjectBackendPids {
+    param([int[]]$ProcessIds)
+
+    foreach ($processId in @($ProcessIds | Select-Object -Unique)) {
+        try {
+            & taskkill.exe /PID $processId /T /F *> $null
+        } catch {
+        }
+    }
+}
+
 function Stop-PortListeners {
     param([int]$Port)
 
@@ -164,24 +216,29 @@ function Stop-PortListeners {
 }
 
 function Test-BackendWorkspace {
+    # Readiness is determined by the public /api/health endpoint only.
+    # Protected document endpoints return 401 when auth is required; that
+    # indicates backend online + authentication required, not backend offline.
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
         $healthCode = & curl.exe -sS -o NUL -w "%{http_code}" --max-time 3 --connect-timeout 2 "http://127.0.0.1:$backendPort/api/health" 2>$null
-        $docsCode = & curl.exe -sS -o NUL -w "%{http_code}" --max-time 3 --connect-timeout 2 "http://127.0.0.1:$backendPort/api/documents" 2>$null
-        return ($healthCode -eq "200" -and $docsCode -eq "200")
+        return ($healthCode -eq "200")
     }
     try {
         $health = Invoke-WebRequest -Uri "http://127.0.0.1:$backendPort/api/health" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-        $docs = Invoke-WebRequest -Uri "http://127.0.0.1:$backendPort/api/documents" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-        return ($health.StatusCode -eq 200 -and $docs.StatusCode -eq 200)
+        return ($health.StatusCode -eq 200)
     } catch {
         return $false
     }
 }
 
-if ((Get-ListeningPids -Port $backendPort).Count -gt 0 -and -not (Test-BackendWorkspace)) {
-    Write-Host "Stopping stale backend on port $backendPort so document, analytics, and agent routes can start..."
-    Stop-PortListeners -Port $backendPort
+$existingProjectBackendPids = @(Get-ProjectBackendPids)
+if ($existingProjectBackendPids.Count -gt 0 -and -not (Test-BackendWorkspace)) {
+    Write-Host "Port $backendPort is occupied by a stale or incomplete Inferra backend. Stopping only this project backend..."
+    Stop-ProjectBackendPids -ProcessIds $existingProjectBackendPids
+}
+elseif ((Get-ListeningPids -Port $backendPort).Count -gt 0 -and -not (Test-BackendWorkspace)) {
+    Write-Warning "Port $backendPort is occupied by a non-Project backend process. The Inferra launcher will not kill unrelated services."
 }
 
 if (-not (Test-TcpPort -Port $backendPort) -or -not (Test-BackendWorkspace)) {
@@ -199,13 +256,13 @@ if (-not (Test-TcpPort -Port $backendPort) -or -not (Test-BackendWorkspace)) {
             $Mode
         ) -WorkingDirectory $backendRoot -WindowStyle Hidden
     } else {
-        Write-Warning "Backend launcher was not found at $backendLauncher. Start FastAPI manually on port 8000."
+        Write-Warning "Backend launcher was not found at $backendLauncher. Start FastAPI manually on port 8001."
     }
 }
 
 $backendReady = Wait-ForEndpoint "http://127.0.0.1`:$backendPort/api/health" -TimeoutSeconds 25 -RequestTimeoutSeconds 3 -Port $backendPort
 if (-not $backendReady -or -not (Test-BackendWorkspace)) {
-    Write-Warning "Backend did not become ready with document routes. The frontend will still start, but API requests may fail until FastAPI is healthy."
+    Write-Warning "Backend did not become ready in time. The frontend will still start, but API requests may fail until FastAPI is healthy on port $backendPort."
 }
 
 if ((Get-ListeningPids -Port $port).Count -gt 0) {
@@ -266,3 +323,4 @@ if ($nextProcess -and -not $nextProcess.HasExited) {
 $exitCode = $nextProcess.ExitCode
 Pop-Location
 exit $exitCode
+

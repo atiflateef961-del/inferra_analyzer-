@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
+import re
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -31,8 +32,35 @@ def create_app() -> FastAPI:
         )
         application.state.database = database
         application.state.firebase_auth = firebase_auth
-        database.connect()
-        firebase_auth.initialize()
+        if not database.connect():
+            error = database.last_error
+            logger = logging.getLogger(__name__)
+            logger.error(
+                "MongoDB initialization failed (%s): %s",
+                type(error).__name__ if error else "UnknownError",
+                _safe_error_message(error, (database.uri,)) if error else "No error details available",
+            )
+        if not firebase_auth.initialize():
+            error = getattr(firebase_auth, "last_error", None)
+            logger = logging.getLogger(__name__)
+            if firebase_auth.configured:
+                logger.error(
+                    "Firebase initialization failed (%s): %s",
+                    type(error).__name__ if error else "UnknownError",
+                    _safe_error_message(error, (getattr(firebase_auth, "private_key", ""),)) if error else "No error details available",
+                )
+            else:
+                missing = [
+                    name for name, value in (
+                        ("FIREBASE_PROJECT_ID", getattr(firebase_auth, "project_id", "")),
+                        ("FIREBASE_CLIENT_EMAIL", getattr(firebase_auth, "client_email", "")),
+                        ("FIREBASE_PRIVATE_KEY", getattr(firebase_auth, "private_key", "")),
+                    ) if not value
+                ]
+                logger.error(
+                    "Firebase initialization skipped: missing %s",
+                    ", ".join(missing) if missing else "service configuration",
+                )
         application.state.document_store = DocumentStore(
             database=database,
             upload_dir=app_settings.upload_dir,
@@ -76,6 +104,19 @@ def create_app() -> FastAPI:
         }
 
     return app
+
+
+def _safe_error_message(error: Exception, secrets: tuple[str, ...]) -> str:
+    """Return useful exception context without echoing configured credentials."""
+    message = str(error)
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+            message = message.replace(secret.replace("\n", "\\n"), "[REDACTED]")
+    # MongoDB driver errors can include the complete URI, including query options.
+    message = re.sub(r"mongodb(?:\+srv)?://[^\s\"']+", "[REDACTED_MONGODB_URI]", message, flags=re.IGNORECASE)
+    message = re.sub(r"-----BEGIN [^-]+PRIVATE KEY-----.*?-----END [^-]+PRIVATE KEY-----", "[REDACTED_PRIVATE_KEY]", message, flags=re.DOTALL)
+    return message[:1000]
 
 
 app = create_app()

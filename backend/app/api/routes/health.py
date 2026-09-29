@@ -14,7 +14,10 @@ def health_check(request: Request):
     firebase_auth = getattr(request.app.state, "firebase_auth", None)
     auth_status = "not_initialized"
     if firebase_auth is not None:
-        auth_status = "ok" if firebase_auth.configured else "unconfigured"
+        if not firebase_auth.configured:
+            auth_status = "unconfigured"
+        else:
+            auth_status = "ok" if getattr(firebase_auth, "app", None) is not None else "unavailable"
 
     return {
         "status": "ok",

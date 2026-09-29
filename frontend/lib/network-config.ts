@@ -25,12 +25,7 @@ export function getDefaultBackendUrl(): string {
     return configured;
   }
 
-  const lanIp = getLanIpv4Address();
-  if (lanIp) {
-    return `http://${lanIp}:8000`;
-  }
-
-  return "http://127.0.0.1:8000";
+  return "http://127.0.0.1:8001";
 }
 
 export function getFrontendAllowedOrigins(): string[] {
@@ -41,3 +36,4 @@ export function getFrontendAllowedOrigins(): string[] {
   }
   return [...new Set(origins)];
 }
+
