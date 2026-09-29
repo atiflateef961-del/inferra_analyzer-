@@ -39,6 +39,7 @@ def test_mongodb_connects_and_closes(monkeypatch):
     database = MongoDatabase("mongodb://example", "ai_inference", 1000)
 
     assert database.connect() is True
+    assert database.failure_diagnostic is None
     assert database.ping() is True
     assert database.database is client.databases["ai_inference"]
 
@@ -57,6 +58,10 @@ def test_mongodb_connection_failure_is_graceful(monkeypatch):
     assert database.connect() is False
     assert database.client is None
     assert database.last_error is not None
+    assert database.failure_diagnostic == {
+        "error_type": "PyMongoError",
+        "message": "database unavailable",
+    }
     assert client.closed is True
     assert database.ping() is False
     assert database.failure_reason == "connection_failed"
@@ -108,6 +113,7 @@ def test_mongodb_ping_reconnects_after_startup_failure(monkeypatch):
     assert database.connect() is False
     assert database.ping() is True
     assert database.client is available_client
+    assert database.failure_diagnostic is None
 
 
 def test_health_reports_database_status_when_connected(monkeypatch):
@@ -267,7 +273,10 @@ def test_mongodb_health_diagnostic_redacts_uri_credentials_and_hosts(monkeypatch
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
     monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
     monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
-    message = f"connection to private-cluster.example.net:27017 failed; password=other-secret; URI={uri}"
+    message = (
+        f"connection to private-cluster.example.net:27017 failed; password=other-secret; "
+        f"api_key=fake-api-key; private_key=fake-private-key; URI={uri}"
+    )
     client = FakeClient(PyMongoError(message))
     monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: client)
 
@@ -278,5 +287,13 @@ def test_mongodb_health_diagnostic_redacts_uri_credentials_and_hosts(monkeypatch
     assert diagnostic["error_type"] == "PyMongoError"
     assert "connection to [REDACTED_HOST]:27017 failed" in diagnostic["message"]
     assert "[REDACTED_MONGODB_URI]" in diagnostic["message"]
-    for secret in (uri, "fake-user", "fake-password", "other-secret", "private-cluster.example.net"):
+    for secret in (
+        uri,
+        "fake-user",
+        "fake-password",
+        "other-secret",
+        "fake-api-key",
+        "fake-private-key",
+        "private-cluster.example.net",
+    ):
         assert secret not in response.text

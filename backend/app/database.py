@@ -26,11 +26,13 @@ def _sanitize_error_message(message: str, uri: str) -> str:
         flags=re.IGNORECASE,
     )
     sanitized = re.sub(
-        r"\b(?:password|passwd|pwd|username|user)\s*[:=]\s*[^\s,;]+",
+        r"\b(?:password|passwd|pwd|username|user|secret|token|api[_-]?key|private[_-]?key|connection[_-]?string)\s*[:=]\s*[^\s,;]+",
         "credential=[REDACTED]",
         sanitized,
         flags=re.IGNORECASE,
     )
+    sanitized = re.sub(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", "[REDACTED_PRIVATE_KEY]", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r"\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", sanitized, flags=re.IGNORECASE)
     # PyMongo server-selection errors can include server addresses separately
     # from the URI; avoid returning infrastructure hostnames or IPs.
     sanitized = re.sub(
@@ -60,6 +62,7 @@ class MongoDatabase:
         self.uri_configured = self.uri_state == "present"
         self.client: MongoClient | None = None
         self.last_error: Exception | None = None
+        self.failure_diagnostic: dict[str, str] | None = None
 
     @property
     def missing_configuration(self) -> list[str]:
@@ -86,13 +89,11 @@ class MongoDatabase:
             return "invalid_configuration"
         return "initialization_failed"
 
-    @property
-    def failure_diagnostic(self) -> dict[str, str] | None:
-        if self.last_error is None:
-            return None
-        return {
-            "error_type": type(self.last_error).__name__,
-            "message": _sanitize_error_message(str(self.last_error), self.uri),
+    def _record_failure(self, error: Exception) -> None:
+        self.last_error = error
+        self.failure_diagnostic = {
+            "error_type": type(error).__name__,
+            "message": _sanitize_error_message(str(error), self.uri),
         }
 
     def connect(self) -> bool:
@@ -100,7 +101,7 @@ class MongoDatabase:
             # Do not try the local fallback URI when deployment configuration
             # is missing; that turns a configuration problem into a misleading
             # server-selection timeout.
-            self.last_error = ConfigurationError("MONGODB_URI is not configured")
+            self._record_failure(ConfigurationError("MONGODB_URI is not configured"))
             self.client = None
             return False
 
@@ -112,7 +113,7 @@ class MongoDatabase:
             )
             client.admin.command("ping")
         except Exception as error:
-            self.last_error = error
+            self._record_failure(error)
             if client is not None:
                 client.close()
             self.client = None
@@ -120,6 +121,7 @@ class MongoDatabase:
 
         self.client = client
         self.last_error = None
+        self.failure_diagnostic = None
         return True
 
     def ping(self) -> bool:
@@ -129,10 +131,11 @@ class MongoDatabase:
         try:
             self.client.admin.command("ping")
         except Exception as error:
-            self.last_error = error
+            self._record_failure(error)
             return False
 
         self.last_error = None
+        self.failure_diagnostic = None
         return True
 
     def close(self) -> None:
