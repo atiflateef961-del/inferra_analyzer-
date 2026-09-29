@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from pprint import pformat
+from urllib.parse import unquote, urlsplit
 
 from pymongo import MongoClient
 from pymongo.errors import (
@@ -76,6 +78,71 @@ def _sanitize_details(value: object, uri: str) -> object:
     return value
 
 
+def mongodb_uri_diagnostics(uri: str, configured: bool, had_outer_whitespace: bool = False) -> dict[str, str]:
+    """Describe a MongoDB URI without returning its password or full contents."""
+    if not configured:
+        return {
+            "uri_exists": "false",
+            "uri_scheme": "none",
+            "uri_hostname": "none",
+            "uri_database": "none",
+            "uri_username": "none",
+            "uri_password_present": "false",
+            "uri_password_length": "0",
+            "uri_suspicious_unencoded": "false",
+            "uri_had_outer_whitespace": str(had_outer_whitespace).lower(),
+            "uri_fingerprint": "unconfigured",
+        }
+
+    try:
+        parts = urlsplit(uri)
+        username = unquote(parts.username or "")
+        password = unquote(parts.password or "")
+        hostname = parts.hostname or "none"
+        port = parts.port
+        scheme = parts.scheme.lower() or "none"
+        database_name = unquote(parts.path.lstrip("/")) or "none"
+        # Reserved delimiters in raw userinfo should be percent encoded. Do not
+        # inspect or emit the password itself, only whether it contains one.
+        userinfo = parts.netloc.rsplit("@", 1)[0] if "@" in parts.netloc else ""
+        suspicious = bool(
+            any(char.isspace() for char in uri)
+            or re.search(r"%(?![0-9A-Fa-f]{2})", uri)
+            or any(char in userinfo for char in "/?#[]")
+            or parts.netloc.count("@") > 1
+            or (parts.password is not None and any(char in parts.password for char in ":@"))
+        )
+        fingerprint_source = "|".join((scheme, hostname.lower(), str(port or ""), parts.path))
+        fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:16]
+        return {
+            "uri_exists": "true",
+            "uri_scheme": scheme,
+            "uri_hostname": hostname,
+            "uri_database": database_name,
+            "uri_username": username or "none",
+            "uri_password_present": str(parts.password is not None).lower(),
+            "uri_password_length": str(len(password)),
+            "uri_suspicious_unencoded": str(suspicious).lower(),
+            "uri_had_outer_whitespace": str(had_outer_whitespace).lower(),
+            "uri_fingerprint": fingerprint,
+        }
+    except (ValueError, UnicodeError):
+        # Malformed values still get a credential-independent fingerprint.
+        fingerprint = hashlib.sha256(b"invalid-mongodb-uri").hexdigest()[:16]
+        return {
+            "uri_exists": "true",
+            "uri_scheme": "invalid",
+            "uri_hostname": "invalid",
+            "uri_database": "none",
+            "uri_username": "none",
+            "uri_password_present": "unknown",
+            "uri_password_length": "unknown",
+            "uri_suspicious_unencoded": "true",
+            "uri_had_outer_whitespace": str(had_outer_whitespace).lower(),
+            "uri_fingerprint": fingerprint,
+        }
+
+
 class MongoDatabase:
     def __init__(
         self,
@@ -84,12 +151,18 @@ class MongoDatabase:
         server_selection_timeout_ms: int,
         uri_configured: bool = True,
         uri_state: str | None = None,
+        uri_had_outer_whitespace: bool = False,
     ) -> None:
         self.uri = uri
         self.database_name = database_name
         self.server_selection_timeout_ms = server_selection_timeout_ms
         self.uri_state = uri_state or ("present" if uri_configured else "absent")
         self.uri_configured = self.uri_state == "present"
+        self.uri_diagnostic = mongodb_uri_diagnostics(
+            uri,
+            configured=self.uri_configured,
+            had_outer_whitespace=uri_had_outer_whitespace,
+        )
         self.client: MongoClient | None = None
         self.last_error: Exception | None = None
         self.failure_diagnostic: dict[str, str] | None = None

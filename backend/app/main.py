@@ -25,6 +25,7 @@ def create_app() -> FastAPI:
             server_selection_timeout_ms=app_settings.mongodb_server_selection_timeout_ms,
             uri_configured=app_settings.mongodb_uri_configured,
             uri_state=app_settings.mongodb_uri_state,
+            uri_had_outer_whitespace=app_settings.mongodb_uri_had_outer_whitespace,
         )
         firebase_auth = FirebaseAuthService(
             project_id=app_settings.firebase_project_id,
@@ -33,6 +34,8 @@ def create_app() -> FastAPI:
         )
         application.state.database = database
         application.state.firebase_auth = firebase_auth
+        mongo_config = " ".join(f"{key}={value}" for key, value in database.uri_diagnostic.items())
+        _log_safely(logging.getLogger(__name__).info, "MongoDB URI configuration: %s", mongo_config)
         if not database.connect():
             error = database.last_error
             logger = logging.getLogger(__name__)

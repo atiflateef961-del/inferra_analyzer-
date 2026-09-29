@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from pymongo.errors import ConfigurationError, OperationFailure, PyMongoError, ServerSelectionTimeoutError
 
 from app.config import Settings
-from app.database import MongoDatabase
+from app.database import MongoDatabase, mongodb_uri_diagnostics
 from app.main import create_app
 
 
@@ -100,6 +100,81 @@ def test_settings_reads_mongodb_uri_from_process_environment(monkeypatch):
     assert settings.mongodb_uri_state == "present"
     assert settings.mongodb_uri_configured is True
     assert settings.mongodb_uri == uri
+
+
+def test_settings_trims_uri_and_records_outer_whitespace(monkeypatch):
+    monkeypatch.setenv("MONGODB_URI", "  mongodb://user:secret@db.example/test  ")
+
+    settings = Settings()
+
+    assert settings.mongodb_uri == "mongodb://user:secret@db.example/test"
+    assert settings.mongodb_uri_configured is True
+    assert settings.mongodb_uri_had_outer_whitespace is True
+
+
+def test_settings_local_fallback_is_not_marked_configured(monkeypatch):
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+
+    settings = Settings()
+
+    assert settings.mongodb_uri == "mongodb://127.0.0.1:27017"
+    assert settings.mongodb_uri_state == "absent"
+    assert settings.mongodb_uri_configured is False
+
+
+def test_mongodb_uri_diagnostics_are_safe_and_fingerprint_ignores_password():
+    uri = "mongodb+srv://infera2:s%40fe%3Apass@cluster.example.net/analytics"
+    diagnostics = mongodb_uri_diagnostics(uri, configured=True)
+    other_password = mongodb_uri_diagnostics(
+        "mongodb+srv://infera2:different-secret@cluster.example.net/analytics",
+        configured=True,
+    )
+
+    assert diagnostics == {
+        "uri_exists": "true",
+        "uri_scheme": "mongodb+srv",
+        "uri_hostname": "cluster.example.net",
+        "uri_database": "analytics",
+        "uri_username": "infera2",
+        "uri_password_present": "true",
+        "uri_password_length": "9",
+        "uri_suspicious_unencoded": "false",
+        "uri_had_outer_whitespace": "false",
+        "uri_fingerprint": diagnostics["uri_fingerprint"],
+    }
+    assert len(diagnostics["uri_fingerprint"]) == 16
+    assert diagnostics["uri_fingerprint"] == other_password["uri_fingerprint"]
+    assert "s%40fe%3Apass" not in str(diagnostics)
+
+
+def test_mongodb_uri_diagnostics_flag_unencoded_characters_and_trimmed_whitespace():
+    diagnostics = mongodb_uri_diagnostics(
+        "mongodb://infera2:bad@pass@cluster.example.net/db name",
+        configured=True,
+        had_outer_whitespace=True,
+    )
+
+    assert diagnostics["uri_suspicious_unencoded"] == "true"
+    assert diagnostics["uri_had_outer_whitespace"] == "true"
+    assert "bad@pass" not in str(diagnostics)
+
+
+def test_mongodb_client_receives_effective_uri_without_transformation(monkeypatch):
+    uri = "mongodb+srv://infera2:encoded%40password@cluster.example.net/analytics"
+    observed: list[str] = []
+    client = FakeClient()
+
+    def fake_mongo_client(effective_uri, **kwargs):
+        observed.append(effective_uri)
+        return client
+
+    monkeypatch.setattr("app.database.MongoClient", fake_mongo_client)
+    database = MongoDatabase(uri, "ai_inference", 1000)
+
+    assert database.connect() is True
+    assert observed == [uri]
+    assert database.uri_diagnostic["uri_password_present"] == "true"
+    assert uri not in str(database.uri_diagnostic)
 
 
 def test_mongodb_ping_reconnects_after_startup_failure(monkeypatch):
