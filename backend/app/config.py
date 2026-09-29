@@ -65,7 +65,11 @@ class Settings:
         self.version = os.getenv("APP_VERSION", "0.1.0")
         self.groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
         self.groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
-        self.mongodb_uri = os.getenv("MONGODB_URI", "mongodb://127.0.0.1:27017").strip()
+        mongodb_uri = os.getenv("MONGODB_URI")
+        self.mongodb_uri_configured = bool(mongodb_uri and mongodb_uri.strip())
+        self.mongodb_uri = (
+            mongodb_uri if mongodb_uri is not None else "mongodb://127.0.0.1:27017"
+        ).strip()
         self.mongodb_database = os.getenv("MONGODB_DATABASE", "ai_inference").strip()
         self.mongodb_server_selection_timeout_ms = _as_int(
             os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS"),

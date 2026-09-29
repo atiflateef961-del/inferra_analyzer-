@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 import logging
-import re
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -24,6 +23,7 @@ def create_app() -> FastAPI:
             uri=app_settings.mongodb_uri,
             database_name=app_settings.mongodb_database,
             server_selection_timeout_ms=app_settings.mongodb_server_selection_timeout_ms,
+            uri_configured=app_settings.mongodb_uri_configured,
         )
         firebase_auth = FirebaseAuthService(
             project_id=app_settings.firebase_project_id,
@@ -35,31 +35,30 @@ def create_app() -> FastAPI:
         if not database.connect():
             error = database.last_error
             logger = logging.getLogger(__name__)
-            logger.error(
-                "MongoDB initialization failed (%s): %s",
+            reason = database.failure_reason or "initialization_failed"
+            _log_safely(
+                logger.error,
+                "MongoDB initialization failed: reason=%s missing=%s error_type=%s",
+                reason,
+                ",".join(database.missing_configuration) or "none",
                 type(error).__name__ if error else "UnknownError",
-                _safe_error_message(error, (database.uri,)) if error else "No error details available",
             )
         if not firebase_auth.initialize():
             error = getattr(firebase_auth, "last_error", None)
             logger = logging.getLogger(__name__)
             if firebase_auth.configured:
-                logger.error(
-                    "Firebase initialization failed (%s): %s",
+                _log_safely(
+                    logger.error,
+                    "Firebase initialization failed: reason=%s error_type=%s",
+                    getattr(firebase_auth, "failure_reason", None) or "initialization_failed",
                     type(error).__name__ if error else "UnknownError",
-                    _safe_error_message(error, (getattr(firebase_auth, "private_key", ""),)) if error else "No error details available",
                 )
             else:
-                missing = [
-                    name for name, value in (
-                        ("FIREBASE_PROJECT_ID", getattr(firebase_auth, "project_id", "")),
-                        ("FIREBASE_CLIENT_EMAIL", getattr(firebase_auth, "client_email", "")),
-                        ("FIREBASE_PRIVATE_KEY", getattr(firebase_auth, "private_key", "")),
-                    ) if not value
-                ]
-                logger.error(
-                    "Firebase initialization skipped: missing %s",
-                    ", ".join(missing) if missing else "service configuration",
+                missing = getattr(firebase_auth, "missing_configuration", [])
+                _log_safely(
+                    logger.error,
+                    "Firebase initialization skipped: reason=missing_configuration missing=%s",
+                    ",".join(missing) if missing else "unknown",
                 )
         application.state.document_store = DocumentStore(
             database=database,
@@ -106,17 +105,12 @@ def create_app() -> FastAPI:
     return app
 
 
-def _safe_error_message(error: Exception, secrets: tuple[str, ...]) -> str:
-    """Return useful exception context without echoing configured credentials."""
-    message = str(error)
-    for secret in secrets:
-        if secret:
-            message = message.replace(secret, "[REDACTED]")
-            message = message.replace(secret.replace("\n", "\\n"), "[REDACTED]")
-    # MongoDB driver errors can include the complete URI, including query options.
-    message = re.sub(r"mongodb(?:\+srv)?://[^\s\"']+", "[REDACTED_MONGODB_URI]", message, flags=re.IGNORECASE)
-    message = re.sub(r"-----BEGIN [^-]+PRIVATE KEY-----.*?-----END [^-]+PRIVATE KEY-----", "[REDACTED_PRIVATE_KEY]", message, flags=re.DOTALL)
-    return message[:1000]
+def _log_safely(log_method, message: str, *args: object) -> None:
+    """Keep optional diagnostics from interrupting application startup."""
+    try:
+        log_method(message, *args)
+    except Exception:
+        pass
 
 
 app = create_app()

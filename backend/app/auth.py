@@ -17,17 +17,41 @@ class FirebaseAuthService:
         client_email: str,
         private_key: str,
     ) -> None:
-        self.project_id = project_id
-        self.client_email = client_email
-        self.private_key = private_key.replace("\\n", "\n")
+        self.project_id = project_id.strip()
+        self.client_email = client_email.strip()
+        self.private_key = private_key.strip().replace("\\n", "\n")
         self.app: firebase_admin.App | None = None
         self.last_error: Exception | None = None
 
     @property
+    def missing_configuration(self) -> list[str]:
+        return [
+            name
+            for name, value in (
+                ("FIREBASE_PROJECT_ID", self.project_id),
+                ("FIREBASE_CLIENT_EMAIL", self.client_email),
+                ("FIREBASE_PRIVATE_KEY", self.private_key),
+            )
+            if not value
+        ]
+
+    @property
     def configured(self) -> bool:
-        return all((self.project_id, self.client_email, self.private_key))
+        return not self.missing_configuration
+
+    @property
+    def failure_reason(self) -> str | None:
+        if self.missing_configuration:
+            return "missing_configuration"
+        if self.app is not None or self.last_error is None:
+            return None
+        if isinstance(self.last_error, (ValueError, TypeError)):
+            return "invalid_configuration"
+        return "initialization_failed"
 
     def initialize(self) -> bool:
+        self.last_error = None
+        self.app = None
         if not self.configured:
             return False
 
@@ -48,7 +72,7 @@ class FirebaseAuthService:
                     service_account,
                     {"projectId": self.project_id},
                 )
-        except (FirebaseError, ValueError, TypeError) as error:
+        except Exception as error:
             self.last_error = error
             self.app = None
             return False

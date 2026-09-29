@@ -1,16 +1,57 @@
 from __future__ import annotations
 
 from pymongo import MongoClient
-from pymongo.errors import PyMongoError
+from pymongo.errors import (
+    ConfigurationError,
+    ExecutionTimeout,
+    NetworkTimeout,
+    OperationFailure,
+    PyMongoError,
+    ServerSelectionTimeoutError,
+    WaitQueueTimeoutError,
+    WTimeoutError,
+)
 
 
 class MongoDatabase:
-    def __init__(self, uri: str, database_name: str, server_selection_timeout_ms: int) -> None:
+    def __init__(
+        self,
+        uri: str,
+        database_name: str,
+        server_selection_timeout_ms: int,
+        uri_configured: bool = True,
+    ) -> None:
         self.uri = uri
         self.database_name = database_name
         self.server_selection_timeout_ms = server_selection_timeout_ms
+        self.uri_configured = uri_configured
         self.client: MongoClient | None = None
-        self.last_error: PyMongoError | None = None
+        self.last_error: Exception | None = None
+
+    @property
+    def missing_configuration(self) -> list[str]:
+        return [] if self.uri_configured else ["MONGODB_URI"]
+
+    @property
+    def failure_reason(self) -> str | None:
+        error = self.last_error
+        if error is None:
+            return None
+        if self.missing_configuration:
+            return "missing_configuration"
+        if isinstance(error, (ServerSelectionTimeoutError, NetworkTimeout, ExecutionTimeout, WaitQueueTimeoutError, WTimeoutError)):
+            return "timeout"
+        if isinstance(error, ConfigurationError):
+            return "invalid_configuration"
+        if isinstance(error, OperationFailure) and (
+            error.code == 18 or getattr(error, "code_name", None) == "AuthenticationFailed"
+        ):
+            return "authentication_failed"
+        if isinstance(error, PyMongoError):
+            return "connection_failed"
+        if isinstance(error, (TypeError, ValueError)):
+            return "invalid_configuration"
+        return "initialization_failed"
 
     def connect(self) -> bool:
         client: MongoClient | None = None
@@ -20,7 +61,7 @@ class MongoDatabase:
                 serverSelectionTimeoutMS=self.server_selection_timeout_ms,
             )
             client.admin.command("ping")
-        except PyMongoError as error:
+        except Exception as error:
             self.last_error = error
             if client is not None:
                 client.close()
@@ -37,7 +78,7 @@ class MongoDatabase:
 
         try:
             self.client.admin.command("ping")
-        except PyMongoError as error:
+        except Exception as error:
             self.last_error = error
             return False
 
