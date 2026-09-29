@@ -158,6 +158,10 @@ def test_health_reports_absent_mongodb_configuration(monkeypatch):
         "reason": "missing_configuration",
         "configuration_state": "absent",
         "missing": ["MONGODB_URI"],
+        "diagnostic": {
+            "error_type": "ConfigurationError",
+            "message": "MONGODB_URI is not configured",
+        },
     }
     assert client.admin.commands == []
 
@@ -180,6 +184,10 @@ def test_health_reports_empty_mongodb_configuration(monkeypatch):
         "reason": "missing_configuration",
         "configuration_state": "empty",
         "missing": ["MONGODB_URI"],
+        "diagnostic": {
+            "error_type": "ConfigurationError",
+            "message": "MONGODB_URI is not configured",
+        },
     }
     assert client.admin.commands == []
 
@@ -199,6 +207,10 @@ def test_nonempty_uri_timeout_is_not_misclassified_as_missing(monkeypatch, caplo
     assert response.status_code == 200
     assert response.json()["database"]["reason"] == "timeout"
     assert response.json()["database"]["configuration_state"] == "present"
+    assert response.json()["database"]["diagnostic"] == {
+        "error_type": "ServerSelectionTimeoutError",
+        "message": "server selection timed out",
+    }
     assert "missing" not in response.json()["database"]
     assert uri not in response.text
     assert "reason=timeout configuration_state=present" in caplog.text
@@ -220,6 +232,10 @@ def test_nonempty_uri_authentication_failure_is_classified_and_sanitized(monkeyp
     database = response.json()["database"]
     assert database["reason"] == "authentication_failed"
     assert database["configuration_state"] == "present"
+    assert database["diagnostic"] == {
+        "error_type": "OperationFailure",
+        "message": "authentication failed for [REDACTED_MONGODB_URI]",
+    }
     assert "fake-user" not in response.text
     assert "fake-password" not in response.text
     assert "fake-user" not in caplog.text
@@ -242,4 +258,25 @@ def test_health_diagnostics_do_not_expose_mongodb_uri_or_password(monkeypatch, c
     assert response.json()["database"]["reason"] == "connection_failed"
     for secret in (uri, "fake-user", "fake-password"):
         assert secret not in caplog.text
+        assert secret not in response.text
+
+
+def test_mongodb_health_diagnostic_redacts_uri_credentials_and_hosts(monkeypatch):
+    uri = "mongodb+srv://fake-user:fake-password@private-cluster.example.net/ai_inference"
+    monkeypatch.setenv("MONGODB_URI", uri)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
+    monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
+    monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
+    message = f"connection to private-cluster.example.net:27017 failed; password=other-secret; URI={uri}"
+    client = FakeClient(PyMongoError(message))
+    monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: client)
+
+    with TestClient(create_app()) as test_client:
+        response = test_client.get("/api/health")
+
+    diagnostic = response.json()["database"]["diagnostic"]
+    assert diagnostic["error_type"] == "PyMongoError"
+    assert "connection to [REDACTED_HOST]:27017 failed" in diagnostic["message"]
+    assert "[REDACTED_MONGODB_URI]" in diagnostic["message"]
+    for secret in (uri, "fake-user", "fake-password", "other-secret", "private-cluster.example.net"):
         assert secret not in response.text

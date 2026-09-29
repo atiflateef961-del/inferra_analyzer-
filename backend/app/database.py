@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from pymongo import MongoClient
 from pymongo.errors import (
     ConfigurationError,
@@ -11,6 +13,35 @@ from pymongo.errors import (
     WaitQueueTimeoutError,
     WTimeoutError,
 )
+
+
+def _sanitize_error_message(message: str, uri: str) -> str:
+    sanitized = message
+    if uri:
+        sanitized = sanitized.replace(uri, "[REDACTED_MONGODB_URI]")
+    sanitized = re.sub(
+        r"mongodb(?:\+srv)?://[^\s\"'<>]+",
+        "[REDACTED_MONGODB_URI]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        r"\b(?:password|passwd|pwd|username|user)\s*[:=]\s*[^\s,;]+",
+        "credential=[REDACTED]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    # PyMongo server-selection errors can include server addresses separately
+    # from the URI; avoid returning infrastructure hostnames or IPs.
+    sanitized = re.sub(
+        r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b",
+        "[REDACTED_HOST]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b", "[REDACTED_HOST]", sanitized)
+    sanitized = " ".join(sanitized.split())
+    return sanitized[:500] or "MongoDB operation failed"
 
 
 class MongoDatabase:
@@ -54,6 +85,15 @@ class MongoDatabase:
         if isinstance(error, (TypeError, ValueError)):
             return "invalid_configuration"
         return "initialization_failed"
+
+    @property
+    def failure_diagnostic(self) -> dict[str, str] | None:
+        if self.last_error is None:
+            return None
+        return {
+            "error_type": type(self.last_error).__name__,
+            "message": _sanitize_error_message(str(self.last_error), self.uri),
+        }
 
     def connect(self) -> bool:
         if self.uri_state in {"absent", "empty"}:
