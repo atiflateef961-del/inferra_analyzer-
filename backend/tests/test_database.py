@@ -1,8 +1,11 @@
+import re
+
+import pytest
 from fastapi.testclient import TestClient
 from pymongo.errors import ConfigurationError, OperationFailure, PyMongoError, ServerSelectionTimeoutError
 
 from app.config import Settings
-from app.database import MongoDatabase, mongodb_uri_diagnostics
+from app.database import MongoDatabase, mongodb_uri_diagnostics, validate_mongodb_uri
 from app.main import create_app
 
 
@@ -18,6 +21,24 @@ class FakeAdmin:
         return {"ok": 1}
 
 
+class FakeDatabase:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.collections_checked = False
+        self.commands: list[str] = []
+
+    def list_collection_names(self) -> list[str]:
+        self.collections_checked = True
+        if self.error is not None:
+            raise self.error
+        return []
+
+    def command(self, name: str) -> dict[str, int]:
+        if self.error is not None:
+            raise self.error
+        return {"ok": 1}
+
+
 class FakeClient:
     def __init__(self, error: Exception | None = None) -> None:
         self.admin = FakeAdmin(error)
@@ -28,7 +49,7 @@ class FakeClient:
         self.closed = True
 
     def __getitem__(self, name: str) -> object:
-        database = self.databases.setdefault(name, object())
+        database = self.databases.setdefault(name, FakeDatabase(self.admin.error))
         return database
 
 
@@ -40,6 +61,7 @@ def test_mongodb_connects_and_closes(monkeypatch):
 
     assert database.connect() is True
     assert database.failure_diagnostic is None
+    assert client.databases["ai_inference"].collections_checked is True
     assert database.ping() is True
     assert database.database is client.databases["ai_inference"]
 
@@ -90,6 +112,10 @@ def test_mongodb_failure_reasons_are_classified():
     assert empty.failure_reason == "missing_configuration"
     assert empty.missing_configuration == ["MONGODB_URI"]
 
+    authorization = MongoDatabase("mongodb://example", "ai_inference", 1000)
+    authorization.last_error = OperationFailure("not authorized", code=13)
+    assert authorization.failure_reason == "authorization_failed"
+
 
 def test_settings_reads_mongodb_uri_from_process_environment(monkeypatch):
     uri = "mongodb://fake-user:fake-password@example.test/ai_inference"
@@ -117,7 +143,7 @@ def test_settings_local_fallback_is_not_marked_configured(monkeypatch):
 
     settings = Settings()
 
-    assert settings.mongodb_uri == "mongodb://127.0.0.1:27017"
+    assert settings.mongodb_uri == ""
     assert settings.mongodb_uri_state == "absent"
     assert settings.mongodb_uri_configured is False
 
@@ -147,6 +173,69 @@ def test_mongodb_uri_diagnostics_are_safe_and_fingerprint_ignores_password():
     assert "s%40fe%3Apass" not in str(diagnostics)
 
 
+def test_mongodb_uri_validator_accepts_srv_and_multi_host_standard_uris():
+    validate_mongodb_uri("mongodb+srv://atlas-user:encoded%40pass@cluster.example.net/?retryWrites=true")
+    validate_mongodb_uri(
+        "mongodb://atlas-user:encoded%40pass@one.example.net:27017,two.example.net:27017,three.example.net:27017/admin?authSource=admin"
+    )
+
+    standard_diagnostics = mongodb_uri_diagnostics(
+        "mongodb://atlas-user:encoded%40pass@one.example.net:27017,two.example.net:27018/admin",
+        configured=True,
+    )
+    assert standard_diagnostics["uri_scheme"] == "mongodb"
+    assert standard_diagnostics["uri_hostname"] == "one.example.net,two.example.net"
+    assert standard_diagnostics["uri_database"] == "admin"
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected_message"),
+    [
+        ("", "MONGODB_URI is empty"),
+        ("https://db.example", "MONGODB_URI must use mongodb:// or mongodb+srv://"),
+        ("mongodb://", "MONGODB_URI must include a hostname"),
+        ("mongodb://user@db.example", "MongoDB URI credentials must include a username and password"),
+        ("mongodb://:password@db.example", "MongoDB URI credentials must include a username and password"),
+        ("mongodb://user:@db.example", "MongoDB URI password is missing"),
+        ("mongodb://user:bad:password@db.example", "MongoDB password contains reserved characters; URL-encode it"),
+        ("mongodb://user:bad@password@db.example", "MongoDB credentials contain reserved characters; URL-encode them"),
+        ("mongodb://user:bad%ZZ@db.example", "MONGODB_URI contains invalid percent encoding"),
+        ("mongodb://user:password@db.example:99999", "MONGODB_URI is malformed"),
+    ],
+)
+def test_mongodb_uri_validator_rejects_invalid_values_without_echoing_them(uri, expected_message):
+    with pytest.raises(ConfigurationError, match=re.escape(expected_message)) as exc_info:
+        validate_mongodb_uri(uri)
+
+    assert "bad:password" not in str(exc_info.value)
+    assert "bad@password" not in str(exc_info.value)
+    if uri:
+        assert uri not in str(exc_info.value)
+
+
+def test_mongodb_uri_validator_reports_missing_or_empty_configuration():
+    with pytest.raises(ConfigurationError, match="not configured"):
+        validate_mongodb_uri("", uri_state="absent")
+    with pytest.raises(ConfigurationError, match="empty"):
+        validate_mongodb_uri("", uri_state="empty")
+
+
+def test_invalid_mongodb_uri_fails_before_client_creation_without_echoing_credentials(monkeypatch):
+    def unexpected_client(*args, **kwargs):
+        raise AssertionError("MongoClient must not be created for an invalid URI")
+
+    monkeypatch.setattr("app.database.MongoClient", unexpected_client)
+    uri = "mongodb://infera2:bad:password@cluster.example.net"
+    database = MongoDatabase(uri, "ai_inference", 1000)
+
+    assert database.connect() is False
+    assert database.failure_reason == "invalid_configuration"
+    assert database.failure_diagnostic is not None
+    assert "URL-encode it" in database.failure_diagnostic["message"]
+    assert "bad:password" not in database.failure_diagnostic["message"]
+    assert uri not in str(database.failure_diagnostic)
+
+
 def test_mongodb_uri_diagnostics_flag_unencoded_characters_and_trimmed_whitespace():
     diagnostics = mongodb_uri_diagnostics(
         "mongodb://infera2:bad@pass@cluster.example.net/db name",
@@ -157,6 +246,19 @@ def test_mongodb_uri_diagnostics_flag_unencoded_characters_and_trimmed_whitespac
     assert diagnostics["uri_suspicious_unencoded"] == "true"
     assert diagnostics["uri_had_outer_whitespace"] == "true"
     assert "bad@pass" not in str(diagnostics)
+
+
+def test_invalid_uri_diagnostics_do_not_leak_password_fragments():
+    diagnostics = mongodb_uri_diagnostics(
+        "mongodb://atlas-user:private-secret/unescaped-fragment@cluster.example.net/db",
+        configured=True,
+    )
+
+    assert diagnostics["uri_suspicious_unencoded"] == "true"
+    assert diagnostics["uri_hostname"] == "invalid"
+    assert diagnostics["uri_database"] == "invalid"
+    assert "private-secret" not in str(diagnostics)
+    assert "unescaped-fragment" not in str(diagnostics)
 
 
 def test_mongodb_client_receives_effective_uri_without_transformation(monkeypatch):
@@ -204,6 +306,29 @@ def test_health_reports_database_status_when_connected(monkeypatch):
         "status": "ok",
         "name": "ai_inference",
     }
+
+
+def test_startup_uri_diagnostics_do_not_log_uri_or_password(monkeypatch, caplog):
+    caplog.set_level("INFO")
+    uri = "mongodb+srv://safe-user:local-secret@cluster.example.net/ai_inference"
+    monkeypatch.setenv("MONGODB_URI", uri)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "")
+    monkeypatch.setenv("FIREBASE_CLIENT_EMAIL", "")
+    monkeypatch.setenv("FIREBASE_PRIVATE_KEY", "")
+    monkeypatch.setattr("app.database.MongoClient", lambda *args, **kwargs: FakeClient())
+
+    with TestClient(create_app()):
+        pass
+
+    assert "uri_exists=true" in caplog.text
+    assert "uri_scheme=mongodb+srv" in caplog.text
+    assert "uri_hostname=cluster.example.net" in caplog.text
+    assert "uri_database=ai_inference" in caplog.text
+    assert "uri_username=safe-user" in caplog.text
+    assert "uri_password_present=true" in caplog.text
+    assert "uri_password_length=12" in caplog.text
+    assert uri not in caplog.text
+    assert "local-secret" not in caplog.text
 
 
 def test_health_reports_unavailable_database_without_failing_startup(monkeypatch):
@@ -267,7 +392,7 @@ def test_health_reports_empty_mongodb_configuration(monkeypatch):
         "missing": ["MONGODB_URI"],
         "diagnostic": {
             "error_type": "ConfigurationError",
-            "message": "MONGODB_URI is not configured",
+            "message": "MONGODB_URI is empty",
         },
     }
     assert client.admin.commands == []

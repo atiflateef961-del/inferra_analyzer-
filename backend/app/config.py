@@ -76,10 +76,10 @@ class Settings:
         else:
             self.mongodb_uri_state = "present"
         self.mongodb_uri_configured = self.mongodb_uri_state == "present"
-        self.mongodb_uri = (
-            mongodb_uri if mongodb_uri is not None else "mongodb://127.0.0.1:27017"
-        ).strip()
+        # An absent setting must remain absent; never silently select a database.
+        self.mongodb_uri = (mongodb_uri or "").strip()
         self.mongodb_database = os.getenv("MONGODB_DATABASE", "ai_inference").strip()
+        # Bound startup and health-check waits; deployments can tune this for their network.
         self.mongodb_server_selection_timeout_ms = _as_int(
             os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS"),
             default=1000,

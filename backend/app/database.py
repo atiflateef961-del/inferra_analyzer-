@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import re
 import hashlib
+import re
 from pprint import pformat
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from pymongo import MongoClient
 from pymongo.errors import (
@@ -22,6 +22,16 @@ def _sanitize_error_message(message: str, uri: str) -> str:
     sanitized = message
     if uri:
         sanitized = sanitized.replace(uri, "[REDACTED_MONGODB_URI]")
+        try:
+            parts = urlsplit(uri)
+            for value in (parts.username, parts.password):
+                if value:
+                    decoded = unquote(value)
+                    for credential in {value, decoded}:
+                        if credential:
+                            sanitized = sanitized.replace(credential, "[REDACTED]")
+        except (ValueError, UnicodeError):
+            pass
     sanitized = re.sub(
         r"mongodb(?:\+srv)?://[^\s\"'<>]+",
         "[REDACTED_MONGODB_URI]",
@@ -95,45 +105,67 @@ def mongodb_uri_diagnostics(uri: str, configured: bool, had_outer_whitespace: bo
         }
 
     try:
+        validate_mongodb_uri(uri)
         parts = urlsplit(uri)
         username = unquote(parts.username or "")
         password = unquote(parts.password or "")
-        hostname = parts.hostname or "none"
-        port = parts.port
+        authority = parts.netloc.rsplit("@", 1)[-1]
+        host_entries = authority.split(",")
+        hostnames: list[str] = []
+        host_fingerprint_parts: list[str] = []
+        for entry in host_entries:
+            if entry.startswith("[") and "]" in entry:
+                closing = entry.index("]")
+                host = entry[1:closing]
+                port_suffix = entry[closing + 1 :]
+                port = port_suffix[1:] if port_suffix.startswith(":") else ""
+            else:
+                host, separator, port = entry.rpartition(":")
+                if not separator:
+                    host, port = entry, ""
+            hostnames.append(host or "none")
+            host_fingerprint_parts.append(f"{host.lower()}:{port}" if port else host.lower())
+        hostname = ",".join(hostnames) or "none"
         scheme = parts.scheme.lower() or "none"
-        database_name = unquote(parts.path.lstrip("/")) or "none"
+        database_name = quote(unquote(parts.path.lstrip("/")), safe="-_.~") or "none"
         # Reserved delimiters in raw userinfo should be percent encoded. Do not
         # inspect or emit the password itself, only whether it contains one.
         userinfo = parts.netloc.rsplit("@", 1)[0] if "@" in parts.netloc else ""
+        scheme_separator = uri.find("://")
+        raw_uri_userinfo = ""
+        if scheme_separator >= 0 and "@" in uri[scheme_separator + 3 :]:
+            raw_uri_userinfo = uri[scheme_separator + 3 :].rsplit("@", 1)[0]
         suspicious = bool(
             any(char.isspace() for char in uri)
             or re.search(r"%(?![0-9A-Fa-f]{2})", uri)
             or any(char in userinfo for char in "/?#[]")
+            or any(char in raw_uri_userinfo for char in "/?#[]")
             or parts.netloc.count("@") > 1
             or (parts.password is not None and any(char in parts.password for char in ":@"))
         )
-        fingerprint_source = "|".join((scheme, hostname.lower(), str(port or ""), parts.path))
+        fingerprint_source = "|".join((scheme, ",".join(host_fingerprint_parts), parts.path))
         fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:16]
         return {
             "uri_exists": "true",
             "uri_scheme": scheme,
             "uri_hostname": hostname,
             "uri_database": database_name,
-            "uri_username": username or "none",
+            "uri_username": quote(username, safe="-_.~") if username else "none",
             "uri_password_present": str(parts.password is not None).lower(),
             "uri_password_length": str(len(password)),
             "uri_suspicious_unencoded": str(suspicious).lower(),
             "uri_had_outer_whitespace": str(had_outer_whitespace).lower(),
             "uri_fingerprint": fingerprint,
         }
-    except (ValueError, UnicodeError):
-        # Malformed values still get a credential-independent fingerprint.
+    except (ConfigurationError, ValueError, UnicodeError):
+        # Never expose parser fragments from a malformed URI; they may be pieces
+        # of an unescaped credential that the URI parser misread as a host/path.
         fingerprint = hashlib.sha256(b"invalid-mongodb-uri").hexdigest()[:16]
         return {
             "uri_exists": "true",
             "uri_scheme": "invalid",
             "uri_hostname": "invalid",
-            "uri_database": "none",
+            "uri_database": "invalid",
             "uri_username": "none",
             "uri_password_present": "unknown",
             "uri_password_length": "unknown",
@@ -141,6 +173,64 @@ def mongodb_uri_diagnostics(uri: str, configured: bool, had_outer_whitespace: bo
             "uri_had_outer_whitespace": str(had_outer_whitespace).lower(),
             "uri_fingerprint": fingerprint,
         }
+
+
+def validate_mongodb_uri(uri: str, configured: bool = True, uri_state: str | None = None) -> None:
+    """Validate URI structure without including configuration values in errors."""
+    state = uri_state or ("present" if configured else "absent")
+    if state == "absent":
+        raise ConfigurationError("MONGODB_URI is not configured")
+    if state == "empty" or not uri:
+        raise ConfigurationError("MONGODB_URI is empty")
+    if uri != uri.strip():
+        raise ConfigurationError("MONGODB_URI has surrounding whitespace; remove it")
+    if any(char.isspace() for char in uri):
+        raise ConfigurationError("MONGODB_URI contains unescaped whitespace")
+    if re.search(r"%(?![0-9A-Fa-f]{2})", uri):
+        raise ConfigurationError("MONGODB_URI contains invalid percent encoding")
+
+    try:
+        parts = urlsplit(uri)
+        scheme = parts.scheme.lower()
+        if scheme not in {"mongodb", "mongodb+srv"}:
+            raise ConfigurationError("MONGODB_URI must use mongodb:// or mongodb+srv://")
+        if not parts.netloc or not parts.hostname:
+            raise ConfigurationError("MONGODB_URI must include a hostname")
+        if "@" in parts.path or "@" in parts.query or "@" in parts.fragment:
+            raise ConfigurationError("MongoDB credentials contain reserved characters; URL-encode them")
+        if parts.fragment:
+            raise ConfigurationError("MONGODB_URI must not contain a fragment")
+        if parts.netloc.count("@") > 1:
+            raise ConfigurationError("MongoDB credentials contain reserved characters; URL-encode them")
+        if "@" in parts.netloc:
+            username, separator, password = parts.netloc.rsplit("@", 1)[0].partition(":")
+            if not separator or not username:
+                raise ConfigurationError("MongoDB URI credentials must include a username and password")
+            if not password:
+                raise ConfigurationError("MongoDB URI password is missing")
+            if ":" in password:
+                raise ConfigurationError("MongoDB password contains reserved characters; URL-encode it")
+            try:
+                unquote(username, errors="strict")
+                unquote(password, errors="strict")
+            except (UnicodeError, ValueError):
+                raise ConfigurationError("MongoDB URI credentials have invalid encoding") from None
+
+        # Standard Mongo URIs permit comma-separated hosts; SRV URIs require one DNS host.
+        hosts = parts.netloc.rsplit("@", 1)[-1].split(",")
+        if scheme == "mongodb+srv" and len(hosts) != 1:
+            raise ConfigurationError("mongodb+srv URIs must specify exactly one hostname")
+        for host in hosts:
+            parsed_host = urlsplit(f"//{host}")
+            if not parsed_host.hostname:
+                raise ConfigurationError("MONGODB_URI must include a valid hostname")
+            _ = parsed_host.port
+            if scheme == "mongodb+srv" and parsed_host.port is not None:
+                raise ConfigurationError("mongodb+srv URIs cannot specify a port")
+    except ConfigurationError:
+        raise
+    except (ValueError, UnicodeError):
+        raise ConfigurationError("MONGODB_URI is malformed") from None
 
 
 class MongoDatabase:
@@ -187,6 +277,10 @@ class MongoDatabase:
             error.code == 18 or getattr(error, "code_name", None) == "AuthenticationFailed"
         ):
             return "authentication_failed"
+        if isinstance(error, OperationFailure) and (
+            error.code == 13 or getattr(error, "code_name", None) in {"Unauthorized", "AuthorizationFailure"}
+        ):
+            return "authorization_failed"
         if isinstance(error, PyMongoError):
             return "connection_failed"
         if isinstance(error, (TypeError, ValueError)):
@@ -214,11 +308,10 @@ class MongoDatabase:
         self.failure_diagnostic = diagnostic
 
     def connect(self) -> bool:
-        if self.uri_state in {"absent", "empty"}:
-            # Do not try the local fallback URI when deployment configuration
-            # is missing; that turns a configuration problem into a misleading
-            # server-selection timeout.
-            self._record_failure(ConfigurationError("MONGODB_URI is not configured"))
+        try:
+            validate_mongodb_uri(self.uri, configured=self.uri_configured, uri_state=self.uri_state)
+        except ConfigurationError as error:
+            self._record_failure(error)
             self.client = None
             return False
 
@@ -228,7 +321,9 @@ class MongoDatabase:
                 self.uri,
                 serverSelectionTimeoutMS=self.server_selection_timeout_ms,
             )
-            client.admin.command("ping")
+            client[self.database_name].command("ping")
+            # A read-only metadata check confirms this user can access the configured DB.
+            client[self.database_name].list_collection_names()
         except Exception as error:
             self._record_failure(error)
             if client is not None:
@@ -246,7 +341,8 @@ class MongoDatabase:
             return self.connect()
 
         try:
-            self.client.admin.command("ping")
+            self.client[self.database_name].command("ping")
+            self.client[self.database_name].list_collection_names()
         except Exception as error:
             self._record_failure(error)
             return False
