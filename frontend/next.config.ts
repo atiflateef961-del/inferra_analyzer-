@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 import { getDefaultBackendUrl, getLanIpv4Address } from "./lib/network-config";
 
-const backendUrl = process.env.BACKEND_URL ?? getDefaultBackendUrl();
+const backendUrl = getDefaultBackendUrl();
 const allowedDevOrigins = [
   "localhost",
   "127.0.0.1",

@@ -19,7 +19,7 @@ const HOP_BY_HOP = new Set([
 ]);
 
 async function proxy(request: NextRequest, pathSegments: string[]): Promise<Response> {
-  const backend = process.env.BACKEND_URL ?? getDefaultBackendUrl();
+  const backend = getDefaultBackendUrl();
   const target = `${backend}/api/${pathSegments.join("/")}${request.nextUrl.search}`;
   const headers = new Headers();
   request.headers.forEach((value, key) => {

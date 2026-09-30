@@ -25,7 +25,7 @@ export function getDefaultBackendUrl(): string {
     return configured;
   }
 
-  return "http://127.0.0.1:8001";
+  return "http://127.0.0.1:8000";
 }
 
 export function getFrontendAllowedOrigins(): string[] {
